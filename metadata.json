@@ -1,0 +1,5 @@
+{
+  "name": "Chat-to-Create (C2C)",
+  "description": "A Gen Z-coded chat app that intelligently detects image-worthy moments and suggests creative visuals based on hyperbole, memes, and high-intensity emotions.",
+  "requestFramePermissions": []
+}

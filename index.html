@@ -1,0 +1,655 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat-to-Create (C2C)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+      body {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background-color: #050505;
+        color: #ffffff;
+      }
+      .glass {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .gradient-border {
+        position: relative;
+        border: 1px solid transparent;
+        background: linear-gradient(#050505, #050505) padding-box,
+                    linear-gradient(to right, #8b5cf6, #ec4899) border-box;
+      }
+      .hide-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .hide-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/client": "https://esm.sh/react-dom@^19.2.4/client",
+    "@google/genai": "https://esm.sh/@google/genai@^1.40.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+
+    <script type="module">
+      import React, { useState, useRef, useEffect, useCallback } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { GoogleGenAI, Type } from "@google/genai";
+
+      // --- types.ts content ---
+      /**
+       * @typedef {Object} ImageSuggestion
+       * @property {string} label
+       * @property {string} prompt
+       */
+
+      /**
+       * @typedef {Object} C2CResponse
+       * @property {boolean} isTriggered
+       * @property {string} reason
+       * @property {ImageSuggestion[]} [suggestions]
+       */
+
+      /**
+       * @typedef {Object} ChatMessage
+       * @property {string} id
+       * @property {'user'|'assistant'} role
+       * @property {string} content
+       * @property {Date} timestamp
+       * @property {ImageSuggestion[]} [suggestions]
+       * @property {string} [generatedImageUrl]
+       * @property {boolean} [isGenerating]
+       */
+
+      // --- geminiService.ts content ---
+      // IMPORTANT: process.env.API_KEY must be injected by the execution environment for API calls to succeed.
+      // This application does not provide UI for entering API keys as per guidelines.
+      const ai = new GoogleGenAI({ apiKey: (typeof process !== 'undefined' && process.env && process.env.API_KEY) ? process.env.API_KEY : '' });
+
+      const SYSTEM_INSTRUCTION = `
+You are the backend engine for "Chat-to-Create" (C2C).
+Monitor input to detect "Image-worthy" moments based on the following rules:
+
+Rules:
+1. Length: If the user input is less than 3 words, it is NOT suitable.
+2. No Harm: If the input contains unsafe or harmful content, it is NOT suitable.
+3. Visual Score (prioritize these if applicable):
+   - Absurd Metaphors: User describes themselves or others as something they aren't (e.g., "toasted marshmallow," "secret agent").
+   - Concrete Wishes/Imagination: User expresses a vivid wish or asks to imagine a scenario (e.g., "dog cleaning house," "being in Maldives").
+
+If NOT suitable, respond with a JSON object where "isTriggered" is false, and MUST include a "reason" that is clear and concise (NOT in Gen Z slang) explaining why it was not suitable. The reason should be in the same language as the user input.
+If SUITABLE, provide 3 distinct creative options within a JSON object where "isTriggered" is true, including a "reason" (in Gen Z slang, explaining why this is a good moment to generate) and "suggestions" array.
+
+Suggestions must be Gen Z-coded: witty, dramatic, and use emojis.
+Detailed Prompts must be professional, descriptive, and optimized for high-quality AI art generators.
+
+Constraints:
+- Output Language: Use the same language of the user input.
+- Output Length: Short Suggestion Label no more than 8 words. Detailed Prompt no more than 100 characters.
+
+Response format must ALWAYS be a valid JSON object:
+{
+  "isTriggered": boolean,
+  "reason": string, // Always required. Clear and concise if isTriggered is false. Gen Z slang if isTriggered is true.
+  "suggestions"?: [ // Only present if isTriggered is true
+    { "label": "Witty Label 1 ✨", "prompt": "Comprehensive prompt for an image generator (max 100 chars)" },
+    { "label": "Witty Label 2 💀", "prompt": "Comprehensive prompt for an image generator (max 100 chars)" },
+    { "label": "Witty Label 3 🌈", "prompt": "Comprehensive prompt for an image generator (max 100 chars)" }
+  ]
+}
+`;
+
+      /**
+       * @param {string} message
+       * @returns {Promise<C2CResponse>}
+       */
+      const analyzeChatMoment = async (message) => {
+        try {
+          const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: message,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  isTriggered: { type: Type.BOOLEAN },
+                  reason: { type: Type.STRING },
+                  suggestions: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        label: { type: Type.STRING },
+                        prompt: { type: Type.STRING }
+                      },
+                      required: ["label", "prompt"]
+                    }
+                  }
+                },
+                required: ["isTriggered", "reason"]
+              }
+            }
+          });
+
+          const resultText = response.text?.trim();
+          const result = JSON.parse(resultText || '{}');
+          return result;
+        } catch (error) {
+          console.error("Analysis Error:", error);
+          return { isTriggered: false, reason: "Analysis failed due to an internal error." };
+        }
+      };
+
+      /**
+       * @param {string} prompt
+       * @param {string} [base64Image]
+       * @param {string} [mimeType]
+       * @returns {Promise<string|null>}
+       */
+      const generateImage = async (
+        prompt,
+        base64Image,
+        mimeType
+      ) => {
+        try {
+          const contents = [];
+
+          if (base64Image && mimeType) {
+            contents.push({
+              inlineData: {
+                data: base64Image,
+                mimeType: mimeType,
+              },
+            });
+            contents.push({
+              text: `Based on the provided image as a reference for the main character, generate an image of this character doing the following: ${prompt}`
+            });
+          } else {
+            contents.push({ text: prompt });
+          }
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image',
+            contents: { parts: contents },
+            config: {
+              imageConfig: {
+                aspectRatio: "1:1"
+              }
+            }
+          });
+
+          for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+              return `data:image/png;base64,${part.inlineData.data}`;
+            }
+          }
+          return null;
+        } catch (error) {
+          console.error("Image Gen Error:", error);
+          return null;
+        }
+      };
+
+      // --- components/SuggestionCard.tsx content ---
+      /**
+       * @param {Object} props
+       * @param {ImageSuggestion} props.suggestion
+       * @param {(prompt: string) => void} props.onSelect
+       * @param {boolean} [props.disabled]
+       * @returns {React.Component}
+       */
+      const SuggestionCard = ({ suggestion, onSelect, disabled }) => {
+        return (
+          React.createElement("button", {
+            onClick: () => onSelect(suggestion.prompt),
+            disabled: disabled,
+            className: `flex-shrink-0 w-48 p-4 rounded-2xl glass transition-all hover:scale-105 active:scale-95 text-left group border border-white/10 hover:border-purple-500/50 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`
+          },
+            React.createElement("div", { className: "text-sm font-bold mb-2 text-purple-300 group-hover:text-purple-400" },
+              suggestion.label
+            ),
+            React.createElement("p", { className: "text-[10px] text-white/50 line-clamp-3 leading-relaxed" },
+              suggestion.prompt
+            ),
+            React.createElement("div", { className: "mt-3 flex items-center justify-between" },
+              React.createElement("span", { className: "text-[10px] font-semibold text-white/30 uppercase tracking-widest" }, "Create"),
+              React.createElement("div", { className: "w-6 h-6 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-purple-500/20 transition-colors" },
+                React.createElement("i", { className: "fa-solid fa-wand-magic-sparkles text-[10px] text-white/40 group-hover:text-purple-400" })
+              )
+            )
+          )
+        );
+      };
+
+      // --- components/ChatBubble.tsx content ---
+      /**
+       * @param {Object} props
+       * @param {ChatMessage} props.message
+       * @param {(messageId: string, prompt: string) => void} props.onSelectSuggestion
+       * @returns {React.Component}
+       */
+      const ChatBubble = ({ message, onSelectSuggestion }) => {
+        const isUser = message.role === 'user';
+
+        return (
+          React.createElement("div", { className: `flex flex-col mb-6 ${isUser ? 'items-end' : 'items-start'}` },
+            React.createElement("div", { className: `max-w-[85%] px-4 py-3 rounded-2xl ${
+              isUser
+                ? 'bg-gradient-to-br from-purple-600 to-pink-600 text-white rounded-tr-none'
+                : 'glass text-white rounded-tl-none'
+            }` },
+              React.createElement("p", { className: "text-sm leading-relaxed whitespace-pre-wrap" }, message.content),
+              React.createElement("div", { className: "text-[9px] mt-1 opacity-50" },
+                message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              )
+            ),
+
+            message.suggestions && message.suggestions.length > 0 && !message.generatedImageUrl && (
+              React.createElement("div", { className: "mt-4 w-full" },
+                React.createElement("div", { className: "flex items-center gap-2 mb-3 px-1" },
+                  React.createElement("span", { className: "text-[10px] font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400 uppercase tracking-widest" },
+                    "C2C Suggested ✨"
+                  )
+                ),
+                React.createElement("div", { className: "flex gap-3 overflow-x-auto pb-2 hide-scrollbar" },
+                  message.suggestions.map((s, idx) => (
+                    React.createElement(SuggestionCard, {
+                      key: idx,
+                      suggestion: s,
+                      onSelect: (prompt) => onSelectSuggestion(message.id, prompt),
+                      disabled: message.isGenerating
+                    })
+                  ))
+                )
+              )
+            ),
+
+            message.isGenerating && (
+              React.createElement("div", { className: "mt-4 w-64 aspect-square rounded-2xl glass flex flex-col items-center justify-center gap-3 animate-pulse" },
+                React.createElement("div", { className: "w-10 h-10 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" }),
+                React.createElement("span", { className: "text-[10px] font-medium text-white/50 uppercase tracking-widest italic" }, "Cooking... 🧑‍🍳")
+              )
+            ),
+
+            message.generatedImageUrl && (
+              React.createElement("div", { className: "mt-4 w-64 group relative" },
+                React.createElement("img", {
+                  src: message.generatedImageUrl,
+                  alt: "Generated content",
+                  className: "w-full aspect-square object-cover rounded-2xl border border-white/10 shadow-2xl shadow-purple-500/10"
+                }),
+                React.createElement("div", { className: "absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex items-center justify-center gap-4" },
+                  React.createElement("button", {
+                    onClick: () => window.open(message.generatedImageUrl),
+                    className: "w-10 h-10 rounded-full glass flex items-center justify-center hover:scale-110 transition-transform"
+                  },
+                    React.createElement("i", { className: "fa-solid fa-expand text-sm" })
+                  )
+                )
+              )
+            )
+          )
+        );
+      };
+
+      // --- components/RemixModal.tsx content ---
+      /**
+       * @param {Object} props
+       * @param {boolean} props.isOpen
+       * @param {() => void} props.onClose
+       * @param {string} props.prompt
+       * @param {(prompt: string, base64Image?: string, mimeType?: string) => void} props.onGenerate
+       * @param {boolean} props.isGenerating
+       * @returns {React.Component}
+       */
+      const RemixModal = ({ isOpen, onClose, prompt, onGenerate, isGenerating }) => {
+        const [uploadedImageBase64, setUploadedImageBase64] = useState(null);
+        const [uploadedImageMimeType, setUploadedImageMimeType] = useState(null);
+
+        if (!isOpen) return null;
+
+        /**
+         * @param {React.ChangeEvent<HTMLInputElement>} event
+         */
+        const handleImageUpload = (event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = (/** @type {string} */ (reader.result)).split(',')[1];
+              setUploadedImageBase64(base64);
+              setUploadedImageMimeType(file.type);
+            };
+            reader.readAsDataURL(file);
+          }
+        };
+
+        const clearImage = () => {
+          setUploadedImageBase64(null);
+          setUploadedImageMimeType(null);
+          /** @type {HTMLInputElement | null} */
+          const fileInput = document.getElementById('remix-image-upload');
+          if (fileInput) fileInput.value = '';
+        };
+
+        const handleGenerateClick = () => {
+          onGenerate(prompt, uploadedImageBase64 || undefined, uploadedImageMimeType || undefined);
+        };
+
+        return (
+          React.createElement("div", { className: "fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" },
+            React.createElement("div", { className: "glass w-full max-w-md p-6 rounded-2xl border border-white/10 flex flex-col gap-5" },
+              React.createElement("h2", { className: "text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400" },
+                "Remix Your Idea ✨"
+              ),
+
+              React.createElement("div", { className: "flex flex-col gap-2" },
+                React.createElement("label", { className: "text-sm font-semibold text-white/70" }, "Selected Prompt:"),
+                React.createElement("p", { className: "text-xs text-white/50 bg-white/5 p-3 rounded-xl max-h-20 overflow-y-auto hide-scrollbar" },
+                  prompt
+                )
+              ),
+
+              React.createElement("div", { className: "flex flex-col gap-3" },
+                React.createElement("label", { htmlFor: "remix-image-upload", className: "text-sm font-semibold text-white/70 flex items-center gap-2" },
+                  "Upload Image (Optional)",
+                  React.createElement("span", { className: "text-[10px] text-white/30" }, "(for character reference)")
+                ),
+                React.createElement("input", {
+                  id: "remix-image-upload",
+                  type: "file",
+                  accept: "image/png, image/jpeg, image/webp",
+                  onChange: handleImageUpload,
+                  className: "hidden"
+                }),
+                React.createElement("label", {
+                  htmlFor: "remix-image-upload",
+                  className: "w-full flex items-center justify-center p-4 rounded-xl border-2 border-dashed border-white/20 text-white/50 cursor-pointer hover:border-purple-500/50 transition-colors"
+                },
+                  React.createElement("i", { className: "fa-solid fa-cloud-arrow-up mr-2" }),
+                  uploadedImageBase64 ? 'Change Image' : 'Click to Upload'
+                ),
+
+                uploadedImageBase64 && (
+                  React.createElement("div", { className: "relative mt-2" },
+                    React.createElement("img", { src: `data:${uploadedImageMimeType};base64,${uploadedImageBase64}`, alt: "Uploaded remix", className: "w-full h-32 object-cover rounded-xl border border-white/10" }),
+                    React.createElement("button", {
+                      onClick: clearImage,
+                      className: "absolute top-2 right-2 p-1 bg-black/50 rounded-full text-white/80 hover:text-white hover:bg-black/70 transition-colors",
+                      "aria-label": "Clear uploaded image"
+                    },
+                      React.createElement("i", { className: "fa-solid fa-times text-xs" })
+                    )
+                  )
+                )
+              ),
+
+              React.createElement("div", { className: "flex justify-end gap-3 mt-4" },
+                React.createElement("button", {
+                  onClick: onClose,
+                  disabled: isGenerating,
+                  className: "px-5 py-2 rounded-xl text-sm font-semibold text-white/70 bg-white/10 hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                },
+                  "Cancel"
+                ),
+                React.createElement("button", {
+                  onClick: handleGenerateClick,
+                  disabled: isGenerating,
+                  className: "px-5 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                },
+                  isGenerating ? (
+                    React.createElement(React.Fragment, null,
+                      React.createElement("div", { className: "w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" }),
+                      "Generating..."
+                    )
+                  ) : (
+                    React.createElement(React.Fragment, null,
+                      React.createElement("i", { className: "fa-solid fa-palette" }),
+                      "Generate"
+                    )
+                  )
+                )
+              )
+            )
+          )
+        );
+      };
+
+      // --- App.tsx content ---
+      const App = () => {
+        const [messages, setMessages] = useState([
+          {
+            id: 'welcome',
+            role: 'assistant',
+            content: "Yo! Ready to turn your chats into visuals? Drop something dramatic or descriptive. 🚀",
+            timestamp: new Date()
+          }
+        ]);
+        const [inputText, setInputText] = useState('');
+        const [isTyping, setIsTyping] = useState(false);
+        const scrollRef = useRef(null);
+
+        const [showRemixModal, setShowRemixModal] = useState(false);
+        const [currentRemixPrompt, setCurrentRemixPrompt] = useState('');
+        const [currentRemixMessageId, setCurrentRemixMessageId] = useState(null);
+
+        const scrollToBottom = useCallback(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTo({
+              top: scrollRef.current.scrollHeight,
+              behavior: 'smooth'
+            });
+          }
+        }, []);
+
+        useEffect(() => {
+          scrollToBottom();
+        }, [messages, isTyping, scrollToBottom]);
+
+        const handleSend = async () => {
+          if (!inputText.trim()) return;
+
+          const userMessage = {
+            id: Date.now().toString(),
+            role: 'user',
+            content: inputText,
+            timestamp: new Date()
+          };
+
+          setMessages(prev => [...prev, userMessage]);
+          setInputText('');
+          setIsTyping(true);
+
+          try {
+            const analysis = await analyzeChatMoment(inputText);
+
+            if (analysis.isTriggered && analysis.suggestions) {
+              setMessages(prev => prev.map(msg =>
+                msg.id === userMessage.id
+                  ? { ...msg, suggestions: analysis.suggestions }
+                  : msg
+              ));
+            } else if (!analysis.isTriggered) {
+              const assistantResponse = {
+                id: Date.now().toString() + '_no_trigger',
+                role: 'assistant',
+                content: analysis.reason,
+                timestamp: new Date()
+              };
+              setMessages(prev => [...prev, assistantResponse]);
+            }
+          } catch (err) {
+            console.error("HandleSend error:", err);
+            const errorResponse = {
+              id: Date.now().toString() + '_error',
+              role: 'assistant',
+              content: "Oops! Something went wrong while analyzing your vibe. Try again!",
+              timestamp: new Date()
+            };
+            setMessages(prev => [...prev, errorResponse]);
+          } finally {
+            setIsTyping(false);
+          }
+        };
+
+        const handleSelectSuggestion = (messageId, prompt) => {
+          setCurrentRemixMessageId(messageId);
+          setCurrentRemixPrompt(prompt);
+          setShowRemixModal(true);
+        };
+
+        const handleCloseRemixModal = () => {
+          setShowRemixModal(false);
+          setCurrentRemixPrompt('');
+          setCurrentRemixMessageId(null);
+        };
+
+        const handleGenerateImage = async (
+          prompt,
+          base64Image,
+          mimeType
+        ) => {
+          if (!currentRemixMessageId) return;
+
+          handleCloseRemixModal();
+
+          setMessages(prev => prev.map(msg =>
+            msg.id === currentRemixMessageId ? { ...msg, isGenerating: true } : msg
+          ));
+
+          try {
+            const imageUrl = await generateImage(prompt, base64Image, mimeType);
+            if (imageUrl) {
+              setMessages(prev => prev.map(msg =>
+                msg.id === currentRemixMessageId ? { ...msg, generatedImageUrl: imageUrl, isGenerating: false } : msg
+              ));
+            } else {
+              setMessages(prev => prev.map(msg =>
+                msg.id === currentRemixMessageId ? { ...msg, isGenerating: false } : msg
+              ));
+            }
+          } catch (err) {
+            console.error("Image Gen trigger error:", err);
+            setMessages(prev => prev.map(msg =>
+              msg.id === currentRemixMessageId ? { ...msg, isGenerating: false } : msg
+            ));
+          }
+        };
+
+        return (
+          React.createElement("div", { className: "flex flex-col h-screen max-w-2xl mx-auto bg-black border-x border-white/5 relative overflow-hidden" },
+            React.createElement("div", { className: "absolute top-[-10%] left-[-20%] w-[60%] h-[40%] bg-purple-900/20 blur-[120px] rounded-full" }),
+            React.createElement("div", { className: "absolute bottom-[-10%] right-[-20%] w-[60%] h-[40%] bg-pink-900/10 blur-[120px] rounded-full" }),
+
+            React.createElement("header", { className: "p-4 glass sticky top-0 z-10 flex items-center justify-between border-b border-white/10" },
+              React.createElement("div", { className: "flex items-center gap-3" },
+                React.createElement("div", { className: "w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/20" },
+                  React.createElement("i", { className: "fa-solid fa-sparkles text-white text-lg" })
+                ),
+                React.createElement("div", null,
+                  React.createElement("h1", { className: "font-bold text-lg leading-tight" }, "Chat-to-Create"),
+                  React.createElement("p", { className: "text-[10px] text-white/40 uppercase tracking-[0.2em] font-semibold" }, "Gen-AI Visualizer")
+                )
+              ),
+              React.createElement("div", { className: "flex items-center gap-3" },
+                React.createElement("div", { className: "flex items-center gap-1 glass px-2 py-1 rounded-full border border-green-500/30" },
+                  React.createElement("div", { className: "w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" }),
+                  React.createElement("span", { className: "text-[10px] text-green-500 font-bold uppercase" }, "Live")
+                )
+              )
+            ),
+
+            React.createElement("main", {
+              ref: scrollRef,
+              className: "flex-1 overflow-y-auto p-4 hide-scrollbar space-y-4"
+            },
+              messages.map(msg => (
+                React.createElement(ChatBubble, {
+                  key: msg.id,
+                  message: msg,
+                  onSelectSuggestion: handleSelectSuggestion
+                })
+              )),
+              isTyping && (
+                React.createElement("div", { className: "flex items-center gap-2 text-white/30 text-xs italic ml-2" },
+                  React.createElement("div", { className: "flex gap-1" },
+                    React.createElement("span", { className: "w-1 h-1 bg-white/30 rounded-full animate-bounce" }),
+                    React.createElement("span", { className: "w-1 h-1 bg-white/30 rounded-full animate-bounce [animation-delay:0.2s]" }),
+                    React.createElement("span", { className: "w-1 h-1 bg-white/30 rounded-full animate-bounce [animation-delay:0.4s]" })
+                  ),
+                  React.createElement("span", null, "Analyzing vibes...")
+                )
+              )
+            ),
+
+            React.createElement("footer", { className: "p-4 bg-gradient-to-t from-black to-transparent relative z-10" },
+              React.createElement("div", { className: "relative group" },
+                React.createElement("input", {
+                  type: "text",
+                  value: inputText,
+                  onChange: (e) => setInputText(e.target.value),
+                  onKeyDown: (e) => e.key === 'Enter' && handleSend(),
+                  placeholder: "Type 'I'm rotting' or 'Cat in a tux'...",
+                  className: "w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-5 pr-14 focus:outline-none focus:border-purple-500/50 focus:ring-4 focus:ring-purple-500/10 transition-all text-sm placeholder:text-white/20"
+                }),
+                React.createElement("button", {
+                  onClick: handleSend,
+                  disabled: !inputText.trim(),
+                  className: "absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:bg-white/5 disabled:text-white/20 text-white flex items-center justify-center transition-all active:scale-90"
+                },
+                  React.createElement("i", { className: "fa-solid fa-arrow-up-long" })
+                )
+              ),
+              React.createElement("div", { className: "mt-3 flex justify-center" },
+                React.createElement("p", { className: "text-[10px] text-white/20 italic font-medium" },
+                  "Try: \"I'm screaming crying throwing up right now 💀\""
+                )
+              )
+            ),
+
+            React.createElement(RemixModal, {
+              isOpen: showRemixModal,
+              onClose: handleCloseRemixModal,
+              prompt: currentRemixPrompt,
+              onGenerate: handleGenerateImage,
+              isGenerating: messages.some(msg => msg.id === currentRemixMessageId && msg.isGenerating)
+            })
+          )
+        );
+      };
+
+      const rootElement = document.getElementById('root');
+      if (!rootElement) {
+        throw new Error("Could not find root element to mount to");
+      }
+
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(
+        React.createElement(React.StrictMode, null,
+          React.createElement(App, null)
+        )
+      );
+    </script>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
