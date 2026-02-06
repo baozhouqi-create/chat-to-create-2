@@ -82,7 +82,7 @@
       // --- geminiService.ts content ---
       // IMPORTANT: process.env.API_KEY must be injected by the execution environment for API calls to succeed.
       // This application does not provide UI for entering API keys as per guidelines.
-      const ai = new GoogleGenAI({ apiKey: (typeof process !== 'undefined' && process.env && process.env.API_KEY) ? process.env.API_KEY : '' });
+      const ai = new GoogleGenAI("AIzaSyDLGOXteWwJ7c4RbUVjR1Eq6K-XV80doNg");
 
       const SYSTEM_INSTRUCTION = `
 You are the backend engine for "Chat-to-Create" (C2C).
