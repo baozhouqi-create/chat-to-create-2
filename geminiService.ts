@@ -2,7 +2,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { C2CResponse, ImageSuggestion } from "./types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
 
 const SYSTEM_INSTRUCTION = `
 You are the backend engine for "Chat-to-Create" (C2C).
